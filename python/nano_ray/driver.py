@@ -79,9 +79,15 @@ class Runtime:
     """The nano-ray runtime, managing workers and task execution."""
 
     def __init__(self, num_workers: int = 4) -> None:
-        from nano_ray._fallback.object_store import ObjectStore
-        from nano_ray._fallback.ownership import OwnershipTable
-        from nano_ray._fallback.scheduler import Scheduler
+        # Try Rust backend first, fall back to pure Python.
+        # The Rust backend provides DashMap (lock-free concurrent map),
+        # SegQueue (lock-free ready queue), and GIL-free blocking wait.
+        try:
+            from nano_ray._core import ObjectStore, OwnershipTable, Scheduler
+        except ImportError:
+            from nano_ray._fallback.object_store import ObjectStore
+            from nano_ray._fallback.ownership import OwnershipTable
+            from nano_ray._fallback.scheduler import Scheduler
 
         self.num_workers = num_workers
         self.object_store = ObjectStore()
