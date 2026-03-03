@@ -170,32 +170,61 @@ class Runtime:
     def submit_task(self, func: Any, args: tuple, kwargs: dict) -> int:
         """Submit a task for execution.
 
-        Returns the object_id for the result. The caller wraps this
-        in an ObjectRef.
+        If args contain ObjectRefs (references to other tasks' results),
+        those are extracted as dependencies. The scheduler holds the task
+        until all dependencies are resolved, forming an implicit Task DAG.
+
+        This is Ray's key insight: users just pass ObjectRefs as arguments,
+        and the system automatically builds and resolves the dependency graph.
+
+        Returns the object_id for the result.
         """
+        from nano_ray.dag import extract_dependencies
+
         task_id = self._next_unique_id()
         object_id = self._next_unique_id()
 
-        # Serialize function + arguments with cloudpickle
-        payload = cloudpickle.dumps((func, args, kwargs))
+        # Extract ObjectRef dependencies from args
+        dep_refs = extract_dependencies(args, kwargs)
+        dep_ids = [ref.object_id for ref in dep_refs]
 
         # Register in ownership table (tracks owner + lineage)
         func_desc = getattr(func, "__qualname__", str(func))
+        lineage = cloudpickle.dumps((func, args, kwargs))
         self.ownership.register_task(
             task_id=task_id,
             object_id=object_id,
             owner_id=os.getpid(),
             function_desc=func_desc,
-            serialized_args=payload,
+            serialized_args=lineage,
+            dependencies=dep_ids if dep_ids else None,
         )
 
-        # Submit to scheduler (no dependencies in Phase 1)
+        # Store raw func/args/kwargs in the task_spec. Serialization is
+        # deferred to _flush_ready_tasks() so ObjectRefs can be resolved
+        # to actual values before the task is sent to a worker.
         task_spec = {
             "task_id": task_id,
             "object_id": object_id,
-            "payload": payload,
+            "func": func,
+            "args": args,
+            "kwargs": kwargs,
         }
-        self.scheduler.submit(task_spec)
+        self.scheduler.submit(
+            task_spec,
+            dependencies=dep_ids if dep_ids else None,
+        )
+
+        # Handle race condition: dependencies may already be resolved.
+        # This happens when a task depends on results from previously
+        # completed tasks (e.g., actor method chains where get() is called
+        # between submissions). The scheduler's on_object_ready for those
+        # objects already fired before this task was submitted, so we
+        # re-trigger for any already-available deps.
+        if dep_ids:
+            for did in dep_ids:
+                if self.object_store.contains(did):
+                    self.scheduler.on_object_ready(did)
 
         # Flush ready tasks into the multiprocessing task_queue
         self._flush_ready_tasks()
@@ -212,13 +241,35 @@ class Runtime:
         return value
 
     def _flush_ready_tasks(self) -> None:
-        """Move all ready tasks from the scheduler to the worker task_queue."""
+        """Move all ready tasks from the scheduler to the worker task_queue.
+
+        For tasks that had dependencies (Phase 3 DAG), this is where
+        ObjectRefs in arguments are resolved to actual values. By the time
+        a task reaches the ready queue, all its dependencies are guaranteed
+        to be in the ObjectStore, so get_or_wait returns immediately.
+        """
+        from nano_ray.dag import resolve_args
+
         while True:
             spec = self.scheduler.pop_ready_task(timeout=0)
             if spec is None:
                 break
+
+            func = spec["func"]
+            args = spec["args"]
+            kwargs = spec["kwargs"]
+
+            # Resolve any ObjectRefs in args to their actual values
+            resolved_args, resolved_kwargs = resolve_args(
+                args,
+                kwargs,
+                lambda ref: self.object_store.get_or_wait(ref.object_id),
+            )
+
+            # Serialize the fully resolved task and send to a worker
+            payload = cloudpickle.dumps((func, resolved_args, resolved_kwargs))
             self._task_queue.put(
-                (spec["task_id"], spec["object_id"], spec["payload"])
+                (spec["task_id"], spec["object_id"], payload)
             )
 
     def _collect_results(self) -> None:

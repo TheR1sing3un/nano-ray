@@ -5,12 +5,17 @@ method calls execute sequentially on a dedicated worker, preserving
 state between calls.
 
 In Ray, actors are bound to a worker process and their methods are
-serialized through a single-threaded executor. nano-ray mirrors this:
-each actor gets a dedicated worker, and method calls are queued to
-ensure sequential execution.
+serialized through a single-threaded executor. nano-ray ensures
+sequential execution by chaining method calls through ObjectRef
+dependencies: each call depends on the previous call's result.
 
-Phase 1: Basic actor support using a dedicated worker per actor.
-Phase 3: Full actor support with proper lifecycle management.
+SIMPLIFICATION: Ray binds actors to specific workers and pins them.
+nano-ray doesn't pin actors — instead, the actor state flows through
+the task system as a serialized _ActorState. Each method call receives
+the previous state, mutates it, and returns the updated state.
+This means the state is serialized/deserialized on every call (slower
+than Ray's pinned approach) but is simpler and works with the existing
+task infrastructure.
 """
 
 from __future__ import annotations
@@ -28,8 +33,8 @@ class ActorHandle:
     """Local proxy for a remote actor instance.
 
     Attribute access returns a callable whose .remote() method submits
-    the method call as a task, ensuring sequential execution on the
-    actor's dedicated worker.
+    the method call as a task, ensuring sequential execution via
+    ObjectRef dependency chaining.
     """
 
     def __init__(
@@ -41,10 +46,11 @@ class ActorHandle:
         self._cls = cls
         self._actor_id = actor_id
         self._runtime = runtime
-        # Actor method calls are serialized through this lock to guarantee ordering
+        # Lock ensures method calls are chained in submission order
         self._call_lock = threading.Lock()
-        # Chain of ObjectRefs ensuring sequential execution:
-        # each method call depends on the previous one completing
+        # Chain of ObjectRefs: each method call depends on the previous one.
+        # Points to a task that returns _ActorState (init) or
+        # (_ActorState, return_value) tuple (method call).
         self._last_ref: ObjectRef | None = None
 
     @classmethod
@@ -53,13 +59,11 @@ class ActorHandle:
     ) -> ActorHandle:
         """Create a new actor instance on a worker.
 
-        The actor's __init__ runs as a task. Subsequent method calls
-        are chained to ensure they execute after initialization completes.
+        The actor's __init__ runs as a task that returns an _ActorState.
+        Subsequent method calls are chained to ensure sequential execution.
         """
         actor_id = runtime._next_unique_id()
 
-        # Create actor state holder — a wrapper that instantiates the class
-        # and stores the instance for subsequent method calls
         def _init_actor(*a: Any, **kw: Any) -> _ActorState:
             instance = actor_cls(*a, **kw)
             return _ActorState(instance)
@@ -78,9 +82,9 @@ class ActorHandle:
 class _ActorState:
     """Wrapper holding a live actor instance inside a worker process.
 
-    This is the serializable container that flows through the task system.
-    Each actor method call receives the previous state, calls the method,
-    and returns the updated state + method return value.
+    The state flows through the task system: each method call receives
+    the previous state, calls the method, and returns updated state +
+    method return value as a tuple.
     """
 
     def __init__(self, instance: Any) -> None:
@@ -101,29 +105,43 @@ class _ActorMethodCaller:
         self._method_name = method_name
 
     def remote(self, *args: Any, **kwargs: Any) -> ObjectRef:
-        """Submit this actor method call as a sequenced task."""
+        """Submit this actor method call as a sequenced task.
+
+        Creates two tasks:
+        1. The actual method call (returns state + value tuple, for chaining)
+        2. A value extractor (returns just the value, for the user)
+
+        This separation ensures the actor state flows through the chain
+        while the user only sees the return value.
+        """
         handle = self._handle
         method_name = self._method_name
 
         with handle._call_lock:
             prev_ref = handle._last_ref
 
+            # Task 1: call the actor method (returns (state, value) tuple)
             def _actor_method_task(
                 prev_state_or_tuple: Any, *a: Any, **kw: Any
             ) -> tuple[Any, Any]:
-                # prev_state_or_tuple is either an _ActorState (from __init__)
-                # or a (state, return_value) tuple (from previous method call)
                 if isinstance(prev_state_or_tuple, _ActorState):
                     state = prev_state_or_tuple
                 else:
                     state = prev_state_or_tuple[0]
                 return state.call_method(method_name, a, kw)
 
-            # Chain: this task depends on the previous actor task's result
             runtime = handle._runtime
-            object_id = runtime.submit_task(
+            chain_object_id = runtime.submit_task(
                 _actor_method_task, (prev_ref, *args), kwargs
             )
-            ref = ObjectRef(object_id)
-            handle._last_ref = ref
-            return ref
+            chain_ref = ObjectRef(chain_object_id)
+            handle._last_ref = chain_ref  # Next call depends on this
+
+            # Task 2: extract just the return value for the user
+            def _extract_return_value(state_and_value: tuple) -> Any:
+                return state_and_value[1]
+
+            user_object_id = runtime.submit_task(
+                _extract_return_value, (chain_ref,), {}
+            )
+            return ObjectRef(user_object_id)
