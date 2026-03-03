@@ -1,0 +1,143 @@
+# .github/workflows/publish-pypi.yml
+#
+# 当推送 tag (格式: v*) 时，自动构建多平台 wheel 并发布到 PyPI
+# 需要在 GitHub repo Settings > Secrets 中配置:
+#   - PYPI_API_TOKEN: PyPI API token (建议使用 project-scoped token)
+
+name: Publish Python Package to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+  # 手动触发 (用于测试)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================
+  # 1. 构建 sdist (源码分发包)
+  # ============================================================
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+
+  # ============================================================
+  # 2. 构建 wheels (多平台、多 Python 版本)
+  # ============================================================
+  build-wheels:
+    name: Build wheel - ${{ matrix.os }} - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---- Linux x86_64 ----
+          - os: ubuntu-latest
+            target: x86_64
+            manylinux: auto
+
+          # ---- Linux aarch64 (cross-compile) ----
+          - os: ubuntu-latest
+            target: aarch64
+            manylinux: auto
+
+          # ---- macOS x86_64 ----
+          - os: macos-13
+            target: x86_64
+
+          # ---- macOS Apple Silicon ----
+          - os: macos-14
+            target: aarch64
+
+          # ---- Windows x86_64 ----
+          - os: windows-latest
+            target: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  # ============================================================
+  # 3. 发布到 PyPI
+  # ============================================================
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [build-sdist, build-wheels]
+    # 仅在 tag push 时发布，手动触发时可以只验证构建
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi
+      url: https://pypi.org/project/nano-ray/
+    permissions:
+      id-token: write  # 用于 Trusted Publisher (推荐)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: List dist files
+        run: ls -lh dist/
+
+      # 方式 A: Trusted Publisher (推荐，无需 token)
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # 如果使用 Trusted Publisher，不需要 password
+          # 如果使用 API Token，取消下面注释:
+          # password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/
+
+  # ============================================================
+  # 4. (可选) 发布到 TestPyPI 用于验证
+  # ============================================================
+  publish-testpypi:
+    name: Publish to TestPyPI
+    runs-on: ubuntu-latest
+    needs: [build-sdist, build-wheels]
+    if: github.event_name == 'workflow_dispatch'
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/nano-ray/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

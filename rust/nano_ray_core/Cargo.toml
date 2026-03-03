@@ -1,7 +1,10 @@
 [package]
-name = "nano_ray_core"
+name = "nano-ray-core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Core Rust components for nano-ray distributed computing framework"
+repository = "https://github.com/TheR1sing3un/nano-ray"
 
 [lib]
 name = "nano_ray_core"
