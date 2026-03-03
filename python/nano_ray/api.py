@@ -157,9 +157,7 @@ def shutdown() -> None:
     _runtime = None
 
 
-def get(
-    refs: ObjectRef | list[ObjectRef], timeout: float | None = None
-) -> Any | list[Any]:
+def get(refs: ObjectRef | list[ObjectRef], timeout: float | None = None) -> Any | list[Any]:
     """Blocking retrieval of one or more ObjectRefs.
 
     Args:

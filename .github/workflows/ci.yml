@@ -1,6 +1,7 @@
 # .github/workflows/ci.yml
 #
-# 每次 push 和 PR 时运行测试，确保发布前代码质量
+# Runs on every push and PR to main.
+# Checks: Rust fmt/clippy/test, Python ruff/pytest across platforms.
 
 name: CI
 
@@ -17,31 +18,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ---- Rust 测试 & Lint ----
+  # ---- Rust format, lint, test ----
   rust-check:
     name: Rust check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust/nano_ray_core
+          # Workspace root is repo root; crate lives under rust/nano_ray_core
+          workspaces: ". -> target"
 
       - name: Format check
-        run: cargo fmt --manifest-path rust/nano_ray_core/Cargo.toml -- --check
+        run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path rust/nano_ray_core/Cargo.toml -- -D warnings
+        run: cargo clippy -- -D warnings
 
+      # --lib: only run unit tests (skip cdylib link which needs Python runtime)
       - name: Test
-        run: cargo test --manifest-path rust/nano_ray_core/Cargo.toml
+        run: cargo test --lib
 
-  # ---- Python 测试 ----
+  # ---- Python lint (runs once, not per-platform) ----
+  python-lint:
+    name: Python lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check python/
+
+      - name: Ruff format check
+        run: ruff format --check python/
+
+  # ---- Python tests (multi-platform, multi-version) ----
   python-test:
     name: Python test - ${{ matrix.os }} - py${{ matrix.python-version }}
+    needs: [rust-check, python-lint]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -60,9 +86,6 @@ jobs:
 
       - name: Install package
         run: pip install -e ".[dev]"
-
-      - name: Lint
-        run: ruff check python/
 
       - name: Test
         run: pytest tests/python/ -v

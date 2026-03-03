@@ -1,10 +1,14 @@
 # .github/workflows/publish-crate.yml
 #
-# 当推送 tag (格式: v*) 时，自动发布 Rust crate 到 crates.io
-# 需要在 GitHub repo Settings > Secrets 中配置:
-#   - CARGO_REGISTRY_TOKEN: crates.io API token
+# Publishes the Rust crate to crates.io when a tag (v*) is pushed.
+#
+# Note: nano-ray-core is a PyO3 extension module (cdylib + rlib). The cdylib
+# output cannot be verified without the Python runtime, so we use --no-verify
+# for packaging. The rlib output is usable from other Rust crates.
+#
+# Required secret: CARGO_REGISTRY_TOKEN (crates.io API token)
 
-name: Publish Rust Crate to crates.io
+name: Publish Rust Crate
 
 on:
   push:
@@ -25,21 +29,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry & build
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust/nano_ray_core
+          workspaces: ". -> target"
 
-      # 先做一次 dry-run 验证
+      # Verify the crate can be packaged (--no-verify skips the build step
+      # which would fail because the cdylib links against Python at runtime)
       - name: Verify crate can be packaged
-        run: cargo publish --dry-run --manifest-path rust/nano_ray_core/Cargo.toml
+        run: cargo package --no-verify --manifest-path rust/nano_ray_core/Cargo.toml
 
-      # 实际发布 (仅 tag push 时)
+      # Run unit tests (--lib skips cdylib link which needs Python runtime)
+      - name: Run tests
+        run: cargo test --lib --manifest-path rust/nano_ray_core/Cargo.toml
+
+      # Publish (only on tag push, not manual workflow_dispatch)
       - name: Publish to crates.io
         if: startsWith(github.ref, 'refs/tags/v')
-        run: cargo publish --manifest-path rust/nano_ray_core/Cargo.toml
+        run: cargo publish --no-verify --manifest-path rust/nano_ray_core/Cargo.toml
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

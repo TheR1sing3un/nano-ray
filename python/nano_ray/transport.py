@@ -39,9 +39,7 @@ def send_msg(sock: socket.socket, obj: Any) -> None:
     """
     data = cloudpickle.dumps(obj)
     if len(data) > _MAX_MESSAGE_SIZE:
-        raise ValueError(
-            f"Message too large: {len(data)} bytes (max {_MAX_MESSAGE_SIZE})"
-        )
+        raise ValueError(f"Message too large: {len(data)} bytes (max {_MAX_MESSAGE_SIZE})")
     header = struct.pack(_HEADER_FMT, len(data))
     sock.sendall(header + data)
 
@@ -57,9 +55,7 @@ def recv_msg(sock: socket.socket) -> Any:
         return None
     (length,) = struct.unpack(_HEADER_FMT, header)
     if length > _MAX_MESSAGE_SIZE:
-        raise ValueError(
-            f"Message too large: {length} bytes (max {_MAX_MESSAGE_SIZE})"
-        )
+        raise ValueError(f"Message too large: {length} bytes (max {_MAX_MESSAGE_SIZE})")
     data = _recv_exact(sock, length)
     if data is None:
         return None

@@ -93,9 +93,7 @@ class RemoteRuntime:
         args_bytes = cloudpickle.dumps(args)
         kwargs_bytes = cloudpickle.dumps(kwargs)
 
-        response = self._send_recv(
-            ("submit_task", func_bytes, args_bytes, kwargs_bytes)
-        )
+        response = self._send_recv(("submit_task", func_bytes, args_bytes, kwargs_bytes))
         if response[0] == "object_id":
             return response[1]
         raise RuntimeError(f"submit_task failed: {response}")
@@ -107,9 +105,7 @@ class RemoteRuntime:
         if response[0] == "value":
             value = cloudpickle.loads(response[1])
             if isinstance(value, _TaskError):
-                raise RuntimeError(
-                    f"Task {value.task_id} failed with error:\n{value.error_msg}"
-                )
+                raise RuntimeError(f"Task {value.task_id} failed with error:\n{value.error_msg}")
             return value
         raise RuntimeError(f"get_object failed: {response}")
 

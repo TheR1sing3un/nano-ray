@@ -8,7 +8,9 @@ repository = "https://github.com/TheR1sing3un/nano-ray"
 
 [lib]
 name = "nano_ray_core"
-crate-type = ["cdylib"]
+# cdylib: Python extension module loaded by the interpreter at runtime
+# rlib: allows cargo test and potential Rust-level reuse
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"] }

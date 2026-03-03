@@ -57,9 +57,7 @@ class DashboardMetrics:
             submit_time = self._task_submit_times.pop(task_id, None)
             if submit_time is not None:
                 duration_ms = (time.time() - submit_time) * 1000
-                self._recent_completions.append(
-                    (time.time(), task_id, duration_ms)
-                )
+                self._recent_completions.append((time.time(), task_id, duration_ms))
                 # Keep only last 100 completions
                 if len(self._recent_completions) > 100:
                     self._recent_completions = self._recent_completions[-100:]

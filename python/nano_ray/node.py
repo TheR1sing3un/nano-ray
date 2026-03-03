@@ -30,7 +30,6 @@ import socket
 import threading
 import time
 import traceback
-import warnings
 from typing import Any
 
 import cloudpickle
@@ -101,12 +100,12 @@ class WorkerNodeService:
             raise RuntimeError(f"Failed to register with head node: {response}")
 
         # Start local worker processes
+        from nano_ray._compat import mp_context
+
         self._task_queue = multiprocessing.Queue()
         self._result_queue = multiprocessing.Queue()
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=DeprecationWarning)
-            ctx = multiprocessing.get_context("fork")
+        ctx = mp_context()
 
         for i in range(self._num_workers):
             p = ctx.Process(
@@ -118,15 +117,11 @@ class WorkerNodeService:
             self._workers.append(p)
 
         # Start poller thread (receives tasks from head)
-        self._poller_thread = threading.Thread(
-            target=self._poll_loop, daemon=True
-        )
+        self._poller_thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._poller_thread.start()
 
         # Start result reporter thread
-        self._reporter_thread = threading.Thread(
-            target=self._report_loop, daemon=True
-        )
+        self._reporter_thread = threading.Thread(target=self._report_loop, daemon=True)
         self._reporter_thread.start()
 
     def _send_to_head(self, msg: Any) -> Any:
@@ -163,9 +158,7 @@ class WorkerNodeService:
 
             task_id, object_id, success, data = result
             try:
-                self._send_to_head(
-                    ("task_result", task_id, object_id, success, data)
-                )
+                self._send_to_head(("task_result", task_id, object_id, success, data))
             except (ConnectionResetError, BrokenPipeError, OSError):
                 break
 

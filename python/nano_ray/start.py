@@ -15,13 +15,10 @@ This mirrors Ray's CLI:
 from __future__ import annotations
 
 import argparse
-import sys
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Start a nano-ray head or worker node."
-    )
+    parser = argparse.ArgumentParser(description="Start a nano-ray head or worker node.")
     parser.add_argument(
         "--head",
         action="store_true",

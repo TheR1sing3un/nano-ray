@@ -18,7 +18,13 @@ def hello() -> str:
 
 
 __all__ = [
-    "init", "shutdown", "remote", "get", "wait",
-    "evict", "reconstruct",
-    "ObjectRef", "hello",
+    "init",
+    "shutdown",
+    "remote",
+    "get",
+    "wait",
+    "evict",
+    "reconstruct",
+    "ObjectRef",
+    "hello",
 ]

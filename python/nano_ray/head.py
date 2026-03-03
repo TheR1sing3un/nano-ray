@@ -38,7 +38,6 @@ from __future__ import annotations
 import os
 import socket
 import threading
-import traceback
 from typing import Any
 
 import cloudpickle
@@ -133,24 +132,20 @@ class HeadService:
         self._server_socket.listen(64)
         self._server_socket.settimeout(1.0)  # Allow periodic shutdown check
 
-        self._accept_thread = threading.Thread(
-            target=self._accept_loop, daemon=True
-        )
+        self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._accept_thread.start()
 
     def _start_local_workers(self) -> None:
         """Start local worker processes on the head node."""
         import multiprocessing
-        import warnings
 
+        from nano_ray._compat import mp_context
         from nano_ray.driver import _worker_loop
 
         self._local_task_queue = multiprocessing.Queue()
         self._local_result_queue = multiprocessing.Queue()
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=DeprecationWarning)
-            ctx = multiprocessing.get_context("fork")
+        ctx = mp_context()
 
         for i in range(self._num_local_workers):
             p = ctx.Process(
@@ -162,9 +157,7 @@ class HeadService:
             self._local_workers.append(p)
 
         # Start result collector for local workers
-        self._local_collector = threading.Thread(
-            target=self._collect_local_results, daemon=True
-        )
+        self._local_collector = threading.Thread(target=self._collect_local_results, daemon=True)
         self._local_collector.start()
 
     def _collect_local_results(self) -> None:
@@ -223,9 +216,7 @@ class HeadService:
             with self._worker_lock:
                 self._worker_conns.append(conn)
             if self._metrics is not None:
-                self._metrics.set_worker_count(
-                    self._num_local_workers + len(self._worker_conns)
-                )
+                self._metrics.set_worker_count(self._num_local_workers + len(self._worker_conns))
             return ("ok",)
 
         elif cmd == "submit_task":
@@ -265,7 +256,6 @@ class HeadService:
 
     def _submit_task(self, func: Any, args: tuple, kwargs: dict) -> int:
         """Submit a task for execution (called from client connection)."""
-        from nano_ray.api import ObjectRef
         from nano_ray.dag import extract_dependencies
 
         task_id = self._next_unique_id()
@@ -345,9 +335,7 @@ class HeadService:
                 break
 
             payload = self._prepare_task_payload(spec)
-            self._local_task_queue.put(
-                (spec["task_id"], spec["object_id"], payload)
-            )
+            self._local_task_queue.put((spec["task_id"], spec["object_id"], payload))
 
     def _handle_task_result(self, result: tuple) -> None:
         """Process a completed task result."""
@@ -363,6 +351,7 @@ class HeadService:
                 self._metrics.set_objects_stored(self.object_store.size())
         else:
             from nano_ray.driver import _TaskError
+
             error = _TaskError(task_id, data)
             self.object_store.put(object_id, error)
             self.ownership.task_failed(task_id, data)

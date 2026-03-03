@@ -1,3 +1,7 @@
+// PyO3 #[pymethods] macro generates `impl From<PyErr> for PyErr` conversions
+// that trigger clippy::useless_conversion. This is a known false positive.
+#![allow(clippy::useless_conversion)]
+
 //! nano_ray_core: Rust backend for nano-ray.
 //!
 //! This crate provides the performance-critical internals:

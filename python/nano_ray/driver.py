@@ -113,16 +113,11 @@ class Runtime:
             return
         self._running = True
 
-        # Spawn worker processes.
-        # Use "fork" context: child processes inherit the parent's memory,
-        # avoiding the "spawn" re-import issue where __main__ gets re-executed.
-        # Ray also uses fork on Linux. On macOS Python 3.12+ this emits a
-        # DeprecationWarning which we suppress.
-        import warnings
+        # Spawn worker processes using platform-appropriate context.
+        # Unix: "fork" (fast, child inherits memory). Windows: "spawn".
+        from nano_ray._compat import mp_context
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=DeprecationWarning)
-            ctx = multiprocessing.get_context("fork")
+        ctx = mp_context()
         for i in range(self.num_workers):
             p = ctx.Process(
                 target=_worker_loop,
@@ -133,9 +128,7 @@ class Runtime:
             self._workers.append(p)
 
         # Start result collector thread
-        self._collector_thread = threading.Thread(
-            target=self._collect_results, daemon=True
-        )
+        self._collector_thread = threading.Thread(target=self._collect_results, daemon=True)
         self._collector_thread.start()
 
     def shutdown(self) -> None:
@@ -246,9 +239,7 @@ class Runtime:
 
         value = self.object_store.get_or_wait(object_id, timeout=timeout)
         if isinstance(value, _TaskError):
-            raise RuntimeError(
-                f"Task {value.task_id} failed with error:\n{value.error_msg}"
-            )
+            raise RuntimeError(f"Task {value.task_id} failed with error:\n{value.error_msg}")
         return value
 
     def reconstruct_object(self, object_id: int) -> None:
@@ -270,15 +261,12 @@ class Runtime:
 
         task_id = self.ownership.get_producer_task(object_id)
         if task_id is None:
-            raise RuntimeError(
-                f"Cannot reconstruct object {object_id}: no lineage found"
-            )
+            raise RuntimeError(f"Cannot reconstruct object {object_id}: no lineage found")
 
         lineage = self.ownership.get_task_lineage(task_id)
         if lineage is None:
             raise RuntimeError(
-                f"Cannot reconstruct object {object_id}: "
-                f"lineage for task {task_id} not found"
+                f"Cannot reconstruct object {object_id}: lineage for task {task_id} not found"
             )
 
         serialized_args, dep_ids = lineage
@@ -344,9 +332,7 @@ class Runtime:
 
             # Serialize the fully resolved task and send to a worker
             payload = cloudpickle.dumps((func, resolved_args, resolved_kwargs))
-            self._task_queue.put(
-                (spec["task_id"], spec["object_id"], payload)
-            )
+            self._task_queue.put((spec["task_id"], spec["object_id"], payload))
 
     def _collect_results(self) -> None:
         """Background thread: reads results from workers and stores them."""

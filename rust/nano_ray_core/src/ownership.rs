@@ -125,7 +125,9 @@ impl PyOwnershipTable {
     /// This is the entry point for lineage-based reconstruction:
     /// object_id → producer_task → task lineage → re-execution.
     fn get_producer_task(&self, object_id: u64) -> Option<u64> {
-        self.objects.get(&object_id).map(|entry| entry.producer_task)
+        self.objects
+            .get(&object_id)
+            .map(|entry| entry.producer_task)
     }
 
     /// Get the complete lineage for a task: serialized_args and dependencies.
@@ -171,17 +173,11 @@ mod tests {
         let table = PyOwnershipTable::new();
         table.register_task(1, 100, 0, "test_func", &[], None);
 
-        assert_eq!(
-            table.get_task_status(1),
-            Some("READY".to_string())
-        );
+        assert_eq!(table.get_task_status(1), Some("READY".to_string()));
         assert_eq!(table.get_result_id(1), Some(100));
 
         table.task_finished(1);
-        assert_eq!(
-            table.get_task_status(1),
-            Some("FINISHED".to_string())
-        );
+        assert_eq!(table.get_task_status(1), Some("FINISHED".to_string()));
     }
 
     #[test]
@@ -226,9 +222,7 @@ mod tests {
     fn test_lineage_storage() {
         let table = PyOwnershipTable::new();
         let lineage_data = b"pickled_func_args_kwargs";
-        table.register_task(
-            1, 100, 0, "compute", lineage_data, Some(vec![50, 60]),
-        );
+        table.register_task(1, 100, 0, "compute", lineage_data, Some(vec![50, 60]));
 
         // Verify lineage is stored (need Python context for full test)
         // Here we just verify the task exists and has correct deps

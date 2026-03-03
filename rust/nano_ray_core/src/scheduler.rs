@@ -61,7 +61,12 @@ impl PyScheduler {
     /// `dependencies` is an optional list of object IDs that must be
     /// available before the task can execute.
     #[pyo3(signature = (task_spec, dependencies=None))]
-    fn submit(&self, py: Python<'_>, task_spec: PyObject, dependencies: Option<Vec<u64>>) -> PyResult<()> {
+    fn submit(
+        &self,
+        py: Python<'_>,
+        task_spec: PyObject,
+        dependencies: Option<Vec<u64>>,
+    ) -> PyResult<()> {
         let deps = dependencies.unwrap_or_default();
         if deps.is_empty() {
             self.ready_queue.push(task_spec);

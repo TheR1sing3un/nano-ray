@@ -54,9 +54,7 @@ class ActorHandle:
         self._last_ref: ObjectRef | None = None
 
     @classmethod
-    def _create(
-        cls, actor_cls: type, args: tuple, kwargs: dict, runtime: Runtime
-    ) -> ActorHandle:
+    def _create(cls, actor_cls: type, args: tuple, kwargs: dict, runtime: Runtime) -> ActorHandle:
         """Create a new actor instance on a worker.
 
         The actor's __init__ runs as a task that returns an _ActorState.
@@ -121,9 +119,7 @@ class _ActorMethodCaller:
             prev_ref = handle._last_ref
 
             # Task 1: call the actor method (returns (state, value) tuple)
-            def _actor_method_task(
-                prev_state_or_tuple: Any, *a: Any, **kw: Any
-            ) -> tuple[Any, Any]:
+            def _actor_method_task(prev_state_or_tuple: Any, *a: Any, **kw: Any) -> tuple[Any, Any]:
                 if isinstance(prev_state_or_tuple, _ActorState):
                     state = prev_state_or_tuple
                 else:
@@ -131,9 +127,7 @@ class _ActorMethodCaller:
                 return state.call_method(method_name, a, kw)
 
             runtime = handle._runtime
-            chain_object_id = runtime.submit_task(
-                _actor_method_task, (prev_ref, *args), kwargs
-            )
+            chain_object_id = runtime.submit_task(_actor_method_task, (prev_ref, *args), kwargs)
             chain_ref = ObjectRef(chain_object_id)
             handle._last_ref = chain_ref  # Next call depends on this
 
@@ -141,7 +135,5 @@ class _ActorMethodCaller:
             def _extract_return_value(state_and_value: tuple) -> Any:
                 return state_and_value[1]
 
-            user_object_id = runtime.submit_task(
-                _extract_return_value, (chain_ref,), {}
-            )
+            user_object_id = runtime.submit_task(_extract_return_value, (chain_ref,), {})
             return ObjectRef(user_object_id)
