@@ -51,6 +51,12 @@ def main() -> None:
         default="0.0.0.0",
         help="Host for the head node to bind to (default: 0.0.0.0).",
     )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8265,
+        help="Port for the dashboard HTTP server (default: 8265, use 0 to disable).",
+    )
 
     args = parser.parse_args()
 
@@ -63,15 +69,19 @@ def main() -> None:
     if args.head:
         from nano_ray.head import HeadService
 
+        dashboard_port = args.dashboard_port if args.dashboard_port != 0 else None
         head = HeadService(
             host=args.host,
             port=args.port,
             num_workers=args.num_workers,
+            dashboard_port=dashboard_port,
         )
         print(
             f"Starting nano-ray head node on {args.host}:{args.port} "
             f"with {args.num_workers} local workers"
         )
+        if dashboard_port:
+            print(f"Dashboard: http://127.0.0.1:{dashboard_port}")
         head.serve_forever()
     else:
         from nano_ray.node import WorkerNodeService

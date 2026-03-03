@@ -49,7 +49,13 @@ from nano_ray.transport import recv_msg, send_msg
 class HeadService:
     """Central coordinator for a nano-ray cluster."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 6379, num_workers: int = 0) -> None:
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 6379,
+        num_workers: int = 0,
+        dashboard_port: int | None = 8265,
+    ) -> None:
         # Use Python fallback or Rust backend for core data structures
         try:
             from nano_ray._core import ObjectStore, OwnershipTable, Scheduler
@@ -60,6 +66,7 @@ class HeadService:
 
         self.host = host
         self.port = port
+        self._dashboard_port = dashboard_port
         self.object_store = ObjectStore()
         self.ownership = OwnershipTable()
         self.scheduler = Scheduler()
@@ -72,7 +79,7 @@ class HeadService:
         self._server_socket: socket.socket | None = None
         self._running = False
 
-        # Connected worker node sockets (for pushing tasks)
+        # Connected worker node sockets (for pulling tasks)
         self._worker_conns: list[socket.socket] = []
         self._worker_lock = threading.Lock()
 
@@ -83,6 +90,10 @@ class HeadService:
         # Task queue for local workers (if any)
         self._local_task_queue: Any = None
         self._local_result_queue: Any = None
+
+        # Dashboard metrics
+        self._metrics: Any = None
+        self._dashboard_server: Any = None
 
     def _next_unique_id(self) -> int:
         with self._id_lock:
@@ -95,6 +106,21 @@ class HeadService:
         if self._running:
             return
         self._running = True
+
+        # Start dashboard if port is specified
+        if self._dashboard_port is not None:
+            from nano_ray.dashboard import DashboardMetrics, start_dashboard
+
+            self._metrics = DashboardMetrics()
+            self._metrics.set_worker_count(self._num_local_workers)
+            try:
+                self._dashboard_server = start_dashboard(
+                    self._metrics,
+                    host="127.0.0.1",
+                    port=self._dashboard_port,
+                )
+            except OSError:
+                pass  # Dashboard port in use, skip silently
 
         # Start local workers if requested
         if self._num_local_workers > 0:
@@ -196,6 +222,10 @@ class HeadService:
         if cmd == "register_worker":
             with self._worker_lock:
                 self._worker_conns.append(conn)
+            if self._metrics is not None:
+                self._metrics.set_worker_count(
+                    self._num_local_workers + len(self._worker_conns)
+                )
             return ("ok",)
 
         elif cmd == "submit_task":
@@ -274,6 +304,10 @@ class HeadService:
                     self.scheduler.on_object_ready(did)
 
         self._flush_ready_tasks()
+
+        if self._metrics is not None:
+            self._metrics.on_task_submitted(task_id)
+
         return object_id
 
     def _prepare_task_payload(self, spec: dict) -> bytes:
@@ -324,11 +358,16 @@ class HeadService:
             self.ownership.task_finished(task_id)
             self.scheduler.on_object_ready(object_id)
             self._flush_ready_tasks()
+            if self._metrics is not None:
+                self._metrics.on_task_completed(task_id)
+                self._metrics.set_objects_stored(self.object_store.size())
         else:
             from nano_ray.driver import _TaskError
             error = _TaskError(task_id, data)
             self.object_store.put(object_id, error)
             self.ownership.task_failed(task_id, data)
+            if self._metrics is not None:
+                self._metrics.on_task_failed(task_id)
 
     def shutdown(self) -> None:
         """Shut down the head node."""
@@ -361,6 +400,10 @@ class HeadService:
                 self._server_socket.close()
             except OSError:
                 pass
+
+        # Shut down dashboard
+        if self._dashboard_server is not None:
+            self._dashboard_server.shutdown()
 
     def serve_forever(self) -> None:
         """Block until shutdown is called (for CLI usage)."""
