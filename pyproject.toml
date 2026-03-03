@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "nano-ray"
+version = "0.1.0"
+description = "A minimal distributed computing framework inspired by Ray"
+requires-python = ">=3.10"
+dependencies = ["cloudpickle>=3.0"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "nano_ray._core"
+python-source = "python"
+manifest-path = "rust/nano_ray_core/Cargo.toml"
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]

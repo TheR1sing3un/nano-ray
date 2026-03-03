@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust/nano_ray_core"]
+resolver = "2"

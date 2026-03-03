@@ -1,0 +1,15 @@
+[package]
+name = "nano_ray_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "nano_ray_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+dashmap = "6"
+bytes = "1"
+crossbeam = "0.8"
+parking_lot = "0.12"
