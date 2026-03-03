@@ -51,6 +51,17 @@ class RemoteRuntime:
         self._conn_lock = threading.Lock()
         self.object_store = _RemoteObjectStoreProxy(self)
 
+        # Local ID generator for actor_id (client-side only, not task/object IDs)
+        self._next_id = 0
+        self._id_lock = threading.Lock()
+
+    def _next_unique_id(self) -> int:
+        """Generate a locally unique ID (for actor handles, not task IDs)."""
+        with self._id_lock:
+            id_ = self._next_id
+            self._next_id += 1
+            return id_
+
     def start(self) -> None:
         """Connect to the head node."""
         self._conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
