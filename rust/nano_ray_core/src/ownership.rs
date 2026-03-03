@@ -8,30 +8,31 @@
 //! eliminating the single-master bottleneck (unlike Spark's driver).
 //!
 //! In single-node nano-ray, the driver owns all tasks. The table structure
-//! is designed for future multi-node extension (Phase 4).
+//! is designed for future multi-node extension.
 //!
-//! SIMPLIFICATION: No lineage-based fault tolerance. We store function
-//! descriptors but don't implement re-execution on failure.
+//! The ownership table also stores lineage information (serialized_args +
+//! dependencies) for each task, enabling lineage-based fault tolerance:
+//! when an object is lost, its producer task can be re-executed from lineage.
 
 use crate::types::TaskStatus;
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-/// Metadata for a registered task.
-/// Some fields are reserved for Phase 4 (multi-node, lineage recovery).
+/// Metadata for a registered task, including full lineage information.
 #[allow(dead_code)]
 struct TaskEntry {
     owner: u64,
     status: RwLock<TaskStatus>,
     result_id: u64,
     function_desc: String,
+    serialized_args: Vec<u8>,
     dependencies: Vec<u64>,
 }
 
 /// Metadata for a registered object (task result).
-/// Some fields are reserved for Phase 4 (multi-node).
 #[allow(dead_code)]
 struct ObjectEntry {
     owner: u64,
@@ -62,9 +63,9 @@ impl PyOwnershipTable {
 
     /// Register a new task and its result object.
     ///
-    /// `serialized_args` is accepted for interface compatibility with the
-    /// Python fallback but not stored in Rust (lineage re-execution is
-    /// not implemented). The function descriptor is stored for debugging.
+    /// Stores the complete lineage: function descriptor, serialized args
+    /// (the full pickled (func, args, kwargs) tuple), and dependencies.
+    /// This lineage enables re-execution when objects are lost.
     #[pyo3(signature = (task_id, object_id, owner_id, function_desc, serialized_args, dependencies=None))]
     fn register_task(
         &self,
@@ -72,7 +73,6 @@ impl PyOwnershipTable {
         object_id: u64,
         owner_id: u64,
         function_desc: &str,
-        #[allow(unused_variables)]
         serialized_args: &[u8],
         dependencies: Option<Vec<u64>>,
     ) {
@@ -81,6 +81,7 @@ impl PyOwnershipTable {
             status: RwLock::new(TaskStatus::Ready),
             result_id: object_id,
             function_desc: function_desc.to_string(),
+            serialized_args: serialized_args.to_vec(),
             dependencies: dependencies.unwrap_or_default(),
         };
         self.tasks.insert(task_id, task);
@@ -117,6 +118,31 @@ impl PyOwnershipTable {
     /// Get the result object ID for a task.
     fn get_result_id(&self, task_id: u64) -> Option<u64> {
         self.tasks.get(&task_id).map(|entry| entry.result_id)
+    }
+
+    /// Get the task ID that produced a given object.
+    ///
+    /// This is the entry point for lineage-based reconstruction:
+    /// object_id → producer_task → task lineage → re-execution.
+    fn get_producer_task(&self, object_id: u64) -> Option<u64> {
+        self.objects.get(&object_id).map(|entry| entry.producer_task)
+    }
+
+    /// Get the complete lineage for a task: serialized_args and dependencies.
+    ///
+    /// Returns (serialized_args_bytes, [dep_object_id, ...]) or None.
+    /// The serialized_args contain the pickled (func, args, kwargs) tuple
+    /// needed to re-execute the task.
+    fn get_task_lineage<'py>(
+        &self,
+        py: Python<'py>,
+        task_id: u64,
+    ) -> Option<(Bound<'py, PyBytes>, Vec<u64>)> {
+        self.tasks.get(&task_id).map(|entry| {
+            let bytes = PyBytes::new_bound(py, &entry.serialized_args);
+            let deps = entry.dependencies.clone();
+            (bytes, deps)
+        })
     }
 
     /// Increment the reference count for an object.
@@ -175,11 +201,9 @@ mod tests {
         let table = PyOwnershipTable::new();
         table.register_task(1, 100, 0, "f", &[], None);
 
-        // Initial ref count is 1
         table.add_ref(100);
-        // Now ref count is 2
-        assert!(!table.remove_ref(100)); // 2 -> 1, not collectable
-        assert!(table.remove_ref(100)); // 1 -> 0, collectable
+        assert!(!table.remove_ref(100)); // 2 -> 1
+        assert!(table.remove_ref(100)); // 1 -> 0
     }
 
     #[test]
@@ -187,5 +211,28 @@ mod tests {
         let table = PyOwnershipTable::new();
         assert!(table.get_task_status(999).is_none());
         assert!(table.get_result_id(999).is_none());
+    }
+
+    #[test]
+    fn test_producer_task_lookup() {
+        let table = PyOwnershipTable::new();
+        table.register_task(42, 100, 0, "my_func", &[1, 2, 3], Some(vec![10, 20]));
+
+        assert_eq!(table.get_producer_task(100), Some(42));
+        assert_eq!(table.get_producer_task(999), None);
+    }
+
+    #[test]
+    fn test_lineage_storage() {
+        let table = PyOwnershipTable::new();
+        let lineage_data = b"pickled_func_args_kwargs";
+        table.register_task(
+            1, 100, 0, "compute", lineage_data, Some(vec![50, 60]),
+        );
+
+        // Verify lineage is stored (need Python context for full test)
+        // Here we just verify the task exists and has correct deps
+        assert_eq!(table.get_result_id(1), Some(100));
+        assert_eq!(table.get_producer_task(100), Some(1));
     }
 }

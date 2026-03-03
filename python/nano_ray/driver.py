@@ -232,13 +232,89 @@ class Runtime:
         return object_id
 
     def get_object(self, object_id: int, timeout: float | None = None) -> Any:
-        """Blocking get for a task result. Re-raises task errors."""
+        """Blocking get for a task result. Re-raises task errors.
+
+        If the object has been evicted from the store but its lineage exists
+        in the ownership table, it is automatically reconstructed by
+        re-executing the producer task chain.
+        """
+        # Auto-reconstruct: if object is missing but lineage exists, rebuild it
+        if not self.object_store.contains(object_id):
+            producer = self.ownership.get_producer_task(object_id)
+            if producer is not None:
+                self.reconstruct_object(object_id)
+
         value = self.object_store.get_or_wait(object_id, timeout=timeout)
         if isinstance(value, _TaskError):
             raise RuntimeError(
                 f"Task {value.task_id} failed with error:\n{value.error_msg}"
             )
         return value
+
+    def reconstruct_object(self, object_id: int) -> None:
+        """Reconstruct a lost object by re-executing its producer task from lineage.
+
+        This is the core of lineage-based fault tolerance:
+        1. Look up the producer task for the lost object
+        2. Recursively reconstruct any missing dependencies
+        3. Deserialize the original (func, args, kwargs) from lineage
+        4. Re-submit the task to workers for execution
+
+        The serialized_args in the ownership table contain the *original*
+        arguments including unresolved ObjectRefs. During re-execution,
+        ObjectRefs are resolved to actual values (which may themselves have
+        been reconstructed in the recursive step).
+        """
+        if self.object_store.contains(object_id):
+            return  # Already available, nothing to do
+
+        task_id = self.ownership.get_producer_task(object_id)
+        if task_id is None:
+            raise RuntimeError(
+                f"Cannot reconstruct object {object_id}: no lineage found"
+            )
+
+        lineage = self.ownership.get_task_lineage(task_id)
+        if lineage is None:
+            raise RuntimeError(
+                f"Cannot reconstruct object {object_id}: "
+                f"lineage for task {task_id} not found"
+            )
+
+        serialized_args, dep_ids = lineage
+
+        # Step 1: Recursively reconstruct any missing dependencies
+        for dep_id in dep_ids:
+            if not self.object_store.contains(dep_id):
+                self.reconstruct_object(dep_id)
+
+        # Step 2: Deserialize the original (func, args, kwargs) from lineage
+        func, args, kwargs = cloudpickle.loads(bytes(serialized_args))
+
+        # Step 3: Resolve ObjectRefs in args to actual values, then re-execute
+        from nano_ray.dag import resolve_args
+
+        resolved_args, resolved_kwargs = resolve_args(
+            args,
+            kwargs,
+            lambda ref: self.object_store.get_or_wait(ref.object_id),
+        )
+
+        payload = cloudpickle.dumps((func, resolved_args, resolved_kwargs))
+        self._task_queue.put((task_id, object_id, payload))
+
+        # Step 4: Block until the result is available
+        self.object_store.get_or_wait(object_id)
+
+    def evict_object(self, object_id: int) -> bool:
+        """Evict an object from the store (simulate data loss).
+
+        The lineage in the ownership table is preserved, so the object
+        can be reconstructed later via reconstruct_object().
+
+        Returns True if the object was evicted, False if it didn't exist.
+        """
+        return self.object_store.delete(object_id)
 
     def _flush_ready_tasks(self) -> None:
         """Move all ready tasks from the scheduler to the worker task_queue.

@@ -58,10 +58,9 @@ the complexity of *distributed* ownership.
 - nano-ray: Driver is the sole owner. Simpler but creates a single point of
   failure and a potential metadata bottleneck.
 
-**Lineage preservation**: Even though nano-ray doesn't implement fault
-tolerance, we store `serialized_args` (the full lineage) in each `TaskEntry`.
-This means the information needed to re-execute a failed task is available,
-demonstrating Ray's lineage-based recovery design without implementing it.
+**Lineage preservation**: We store `serialized_args` (the full lineage) in
+each `TaskEntry` — both in the Python fallback and the Rust backend. This
+lineage is actively used for object reconstruction (see Section 10).
 
 ---
 
@@ -380,3 +379,109 @@ every second and updates the UI. No WebSocket or server-sent events needed.
 backend API, supporting detailed profiling, memory analysis, and log viewing.
 nano-ray's dashboard is intentionally minimal — a single HTML file with inline
 CSS and JavaScript, demonstrating the concept without framework dependencies.
+
+---
+
+## 10. Lineage-Based Fault Tolerance
+
+**Decision**: Store complete task lineage in OwnershipTable; reconstruct lost
+objects by re-executing their producer tasks via the lineage chain.
+
+### 10.1 Why Lineage Instead of Checkpointing
+
+Distributed systems traditionally use checkpointing: periodically save the
+full state to durable storage. This is expensive for fine-grained task systems
+like Ray, where millions of small objects are created per second.
+
+Ray's insight: since tasks are (ideally) deterministic and objects are
+immutable, you don't need to save the data — you just need to remember
+*how to recompute it*. This is the task's lineage: the function, arguments,
+and dependency relationships that produced it.
+
+**Tradeoff**: Lineage recovery requires re-execution time proportional to
+the depth of the lost object's dependency chain. Checkpointing has constant
+recovery time but constant overhead. For short-lived, fine-grained tasks,
+lineage wins.
+
+### 10.2 What We Store
+
+Each `TaskEntry` in the `OwnershipTable` stores:
+
+```
+task_id:          unique identifier
+serialized_args:  cloudpickle.dumps((func, args, kwargs))  ← full lineage
+dependencies:     [object_id, ...]  ← upstream objects this task needed
+result_id:        object_id  ← the object this task produced
+```
+
+Each `ObjectEntry` stores:
+
+```
+object_id:       unique identifier
+producer_task:   task_id  ← which task created this object (reverse lookup)
+```
+
+The `serialized_args` contains the *original* arguments including `ObjectRef`s
+(not resolved values). This is critical: during reconstruction, `ObjectRef`s
+in the arguments trigger recursive dependency reconstruction.
+
+### 10.3 Reconstruction Algorithm
+
+When `get(ref)` discovers an object has been evicted from the object store
+but its lineage still exists in the ownership table:
+
+```
+reconstruct(object_id):
+    1. if object_store.contains(object_id): return  # still available
+
+    2. task_id = ownership.get_producer_task(object_id)
+       lineage = ownership.get_task_lineage(task_id)
+
+    3. for dep_id in lineage.dependencies:         # recursive step
+           if not object_store.contains(dep_id):
+               reconstruct(dep_id)
+
+    4. func, args, kwargs = deserialize(lineage.serialized_args)
+       resolve ObjectRefs in args → actual values from object_store
+       re-submit (task_id, object_id, func, args, kwargs) to worker queue
+
+    5. object_store.get_or_wait(object_id)          # block until rebuilt
+```
+
+**Key properties**:
+- **Recursive**: if a dependency is also missing, reconstruct it first
+- **Idempotent**: re-executing a deterministic task produces the same result
+- **Lazy**: only reconstructs what is actually needed, not the entire DAG
+
+### 10.4 User API
+
+```python
+# Simulate object eviction (for testing/demonstration)
+nanoray.evict(ref)                    # remove value from object store
+
+# Explicit reconstruction
+value = nanoray.reconstruct(ref)      # rebuild via lineage, return value
+
+# Automatic reconstruction (transparent to user)
+value = nanoray.get(ref)              # if evicted, auto-reconstructs
+```
+
+The `evict()` API exists for educational purposes: it lets users simulate
+object loss and observe the reconstruction process. In production Ray,
+eviction happens automatically under memory pressure or node failures.
+
+### 10.5 Compared to Ray
+
+| Aspect | Ray | nano-ray |
+|--------|-----|----------|
+| Trigger | Automatic (node failure, OOM eviction) | Manual `evict()` + auto `get()` |
+| Scope | Distributed (cross-node reconstruction) | Single-node only |
+| Ownership | Decentralized (owner re-executes) | Centralized (driver re-executes) |
+| GC interaction | Lost lineage when owner dies | Lineage never lost (driver is sole owner) |
+| Non-deterministic tasks | Marks as non-reconstructable | Assumes determinism |
+
+**SIMPLIFICATION**: Ray handles non-deterministic tasks (e.g., reading from
+network, random sampling with different seeds) by marking them as
+non-reconstructable via lineage. nano-ray assumes all tasks are deterministic.
+This is acceptable for the educational examples but would need refinement for
+production use.

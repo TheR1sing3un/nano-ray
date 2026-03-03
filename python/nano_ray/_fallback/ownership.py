@@ -85,6 +85,29 @@ class OwnershipTable:
             entry = self._tasks.get(task_id)
             return entry["result_id"] if entry else None
 
+    def get_producer_task(self, object_id: int) -> int | None:
+        """Get the task ID that produced a given object.
+
+        Entry point for lineage-based reconstruction:
+        object_id → producer_task → task lineage → re-execution.
+        """
+        with self._lock:
+            entry = self._objects.get(object_id)
+            return entry["producer_task"] if entry else None
+
+    def get_task_lineage(self, task_id: int) -> tuple[bytes, list[int]] | None:
+        """Get the complete lineage for a task: serialized_args and dependencies.
+
+        Returns (serialized_args_bytes, [dep_object_id, ...]) or None.
+        The serialized_args contain the pickled (func, args, kwargs) tuple
+        needed to re-execute the task.
+        """
+        with self._lock:
+            entry = self._tasks.get(task_id)
+            if entry is None:
+                return None
+            return (entry["serialized_args"], list(entry["dependencies"]))
+
     def add_ref(self, object_id: int) -> None:
         with self._lock:
             if object_id in self._objects:

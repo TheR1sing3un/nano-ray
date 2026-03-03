@@ -94,7 +94,67 @@ Worker A 调用 f.remote()
 
 不做 checkpoint（开销太大），记录 task 的 lineage（血统）。对象丢失时，通过 lineage 重新执行 task 重建对象。
 
-**nano-ray 简化**：P0-P3 阶段不实现容错，但 OwnershipTable 中保留 lineage 信息字段（task_id → function + args 的映射），为后续扩展留口。
+**核心思想**：每个 task 的完整执行信息（函数 + 参数 + 依赖关系）构成其 lineage。当 object store 中的对象因节点故障、内存压力等原因丢失时，系统可通过 lineage 重新执行 producer task 来重建对象。如果 producer task 的输入依赖也丢失了，则递归重建整条 lineage 链。
+
+**Lineage 信息存储在 OwnershipTable 中**：
+
+```
+TaskEntry:
+  task_id          → 唯一标识
+  function_desc    → 函数描述（human-readable）
+  serialized_args  → cloudpickle.dumps((func, args, kwargs))  ← 完整 lineage
+  dependencies     → [ObjectId, ...]  ← 依赖哪些上游对象
+  result_id        → ObjectId  ← 本 task 产出的对象
+
+ObjectEntry:
+  object_id        → 唯一标识
+  producer_task    → TaskId  ← 产出该对象的 task（反向查找入口）
+  ref_count        → 引用计数
+```
+
+**重建算法**（递归）：
+
+```
+reconstruct(object_id):
+    if object_store.contains(object_id):
+        return  # 对象仍在，无需重建
+
+    task_id = ownership.get_producer_task(object_id)
+    task_info = ownership.get_task_lineage(task_id)
+
+    # 递归重建所有缺失的依赖
+    for dep_id in task_info.dependencies:
+        if not object_store.contains(dep_id):
+            reconstruct(dep_id)
+
+    # 重新提交 task 执行
+    func, args, kwargs = deserialize(task_info.serialized_args)
+    re_submit_task(task_id, object_id, func, args, kwargs)
+    object_store.get_or_wait(object_id)  # 阻塞等待重建完成
+```
+
+**用户 API**：
+
+```python
+# 模拟对象丢失（测试/演示用）
+nanoray.evict(ref)
+
+# 手动触发 lineage 重建
+value = nanoray.reconstruct(ref)
+
+# 自动重建：get() 发现对象被驱逐时自动触发 reconstruct
+value = nanoray.get(ref)  # 对象不在 → 查 lineage → 重建 → 返回
+```
+
+**nano-ray 实现范围**：
+- ✅ OwnershipTable 中存储完整 lineage（Rust + Python fallback 均存储 serialized_args）
+- ✅ 提供 lineage 查询接口（get_task_lineage、get_producer_task）
+- ✅ 实现单节点 lineage 重建（evict → reconstruct）
+- ✅ get() 集成自动重建
+- ❌ 不实现分布式 lineage 重建（需跨节点协调，复杂度过高）
+- ❌ 不实现自动内存压力驱逐（手动 evict 即可演示原理）
+
+**与 Ray 的对比**：Ray 的 lineage 重建是全自动的——当 worker 请求一个不在本地 object store 的对象时，系统自动通过 ownership 信息定位或重建。nano-ray 简化为手动 evict + get() 时自动重建，足以展示 lineage 容错的设计理念。
 
 ---
 

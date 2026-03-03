@@ -178,6 +178,46 @@ def get(
     return _runtime.get_object(refs.object_id, timeout=timeout)
 
 
+def evict(ref: ObjectRef) -> bool:
+    """Evict an object from the object store (simulate data loss).
+
+    The lineage in the ownership table is preserved, so the object
+    can be reconstructed later via reconstruct() or automatically
+    when get() is called.
+
+    This is primarily an educational tool: it lets users simulate
+    object loss and observe lineage-based reconstruction. In production
+    Ray, eviction happens automatically under memory pressure.
+
+    Args:
+        ref: The ObjectRef to evict.
+
+    Returns:
+        True if the object was evicted, False if it didn't exist.
+    """
+    if _runtime is None:
+        raise RuntimeError("nano-ray is not initialized. Call nanoray.init() first.")
+    return _runtime.evict_object(ref.object_id)
+
+
+def reconstruct(ref: ObjectRef) -> Any:
+    """Explicitly reconstruct a lost object via lineage re-execution.
+
+    Looks up the producer task's lineage (function + args), recursively
+    reconstructs any missing dependencies, and re-executes the task.
+
+    Args:
+        ref: The ObjectRef to reconstruct.
+
+    Returns:
+        The reconstructed value.
+    """
+    if _runtime is None:
+        raise RuntimeError("nano-ray is not initialized. Call nanoray.init() first.")
+    _runtime.reconstruct_object(ref.object_id)
+    return _runtime.get_object(ref.object_id)
+
+
 def wait(
     refs: list[ObjectRef],
     num_returns: int = 1,
