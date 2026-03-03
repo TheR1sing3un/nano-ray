@@ -120,15 +120,31 @@ def init(num_workers: int = 4, address: str | None = None) -> None:
     """Initialize the nano-ray runtime.
 
     Args:
-        num_workers: Number of local worker processes to spawn.
-        address: Remote head node address (Phase 4+, not yet supported).
+        num_workers: Number of local worker processes to spawn (local mode).
+        address: Head node address as "host:port" (cluster mode).
+                 When specified, connects to an existing cluster instead
+                 of starting local workers.
+
+    Local mode (address=None):
+        Starts a local Runtime with worker processes. All computation
+        happens within this process and its worker children.
+
+    Cluster mode (address="host:port"):
+        Connects to a running head node. Tasks are submitted to the head
+        and executed by remote worker nodes. This mirrors Ray's client
+        mode (ray.init(address=...)).
     """
     global _runtime
     if _runtime is not None:
         raise RuntimeError("nano-ray is already initialized. Call shutdown() first.")
+
     if address is not None:
-        raise NotImplementedError("Multi-node mode is not yet supported (Phase 4).")
-    _runtime = Runtime(num_workers=num_workers)
+        from nano_ray.remote_runtime import RemoteRuntime
+
+        _runtime = RemoteRuntime(address=address)
+    else:
+        _runtime = Runtime(num_workers=num_workers)
+
     _runtime.start()
 
 
